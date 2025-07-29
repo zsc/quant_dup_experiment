@@ -23,10 +23,7 @@ Qwen 模型采用标准 Transformer 架构，但在以下方面有所优化：
 - 注意力头数：32B 模型使用 40 个注意力头
 
 **前馈网络（FFN）**：
-```
-FFN(x) = SwiGLU(xW_gate) * (xW_up) * W_down
-```
-- 采用 SwiGLU 激活函数
+- 采用 SwiGLU 激活函数，形式为 FFN(x) = SwiGLU(xW_gate) * (xW_up) * W_down
 - 中间层维度：13696（约 2.67× 隐藏维度）
 - 权重矩阵占模型参数主体（约 66%）
 
@@ -75,12 +72,10 @@ FFN(x) = SwiGLU(xW_gate) * (xW_up) * W_down
 基于 QuaRot 和 DFRot 的见解，我们设计了与层复制协同的旋转策略：
 
 **多重旋转 Ensemble**：
-```
-对于层 k 的复制：
+对于层 k 的复制策略：
 - 原始层：使用标准 Hadamard 旋转 H_k
 - 复制层 1：使用扰动旋转 H_k * P_1（P_1 为小幅度随机正交矩阵）
 - 复制层 2：使用优化旋转 R_k（针对巨大激活值优化）
-```
 
 **旋转参数生成**：
 1. **基础 Hadamard**：随机生成，固定 seed 确保可复现
@@ -90,9 +85,8 @@ FFN(x) = SwiGLU(xW_gate) * (xW_up) * W_down
 ### 6.2.2 串行与并行复制架构对比
 
 **串行复制架构**：
-```
-Input → Layer_k(H_1) → Layer_k(H_2) → Layer_k+1 → ...
-```
+数据流向：Input → Layer_k(H_1) → Layer_k(H_2) → Layer_k+1 → ...
+
 优势：
 - 非线性累积效应更强
 - 不需要额外的融合操作
@@ -104,11 +98,11 @@ Input → Layer_k(H_1) → Layer_k(H_2) → Layer_k+1 → ...
 - 梯度传播路径变长
 
 **并行复制架构**：
-```
-         ┌→ Layer_k(H_1) →┐
-Input →  ├→ Layer_k(H_2) →┼→ Add → Layer_k+1
-         └→ Layer_k(H_3) →┘
-```
+数据流向采用多分支结构：
+- Input 分别输入到 Layer_k 的三个副本（H_1, H_2, H_3）
+- 三个分支的输出通过 Add 操作合并
+- 合并结果传递给 Layer_k+1
+
 优势：
 - 可并行计算，延迟增加有限
 - 类似 ensemble 效果
@@ -144,19 +138,15 @@ Input →  ├→ Layer_k(H_2) →┼→ Add → Layer_k+1
 为最小化在线计算开销，采用以下优化：
 
 1. **权重预融合**：
-   ```python
-   # 离线阶段
-   W_rotated_1 = W @ H_1.T
-   W_rotated_2 = W @ (H_1 * P_1).T
-   ```
+   在离线阶段预先计算旋转后的权重：
+   - W_rotated_1 = W @ H_1.T
+   - W_rotated_2 = W @ (H_1 * P_1).T
 
 2. **激活变换复用**：
-   ```python
-   # 在线计算
-   X_rot_base = X @ H_1  # 基础旋转
-   X_rot_1 = X_rot_base  # 第一个复制层
-   X_rot_2 = X_rot_base @ P_1  # 第二个复制层，增量计算
-   ```
+   在线计算时复用基础旋转结果：
+   - X_rot_base = X @ H_1（基础旋转）
+   - X_rot_1 = X_rot_base（第一个复制层直接使用）
+   - X_rot_2 = X_rot_base @ P_1（第二个复制层增量计算）
 
 3. **量化参数缓存**：
    - 预计算各复制层的 scaling factors
@@ -263,19 +253,13 @@ Input →  ├→ Layer_k(H_2) →┼→ Add → Layer_k+1
 开发自动层选择算法，基于以下指标：
 
 1. **量化误差贡献**：
-   ```
-   Error_k = ||W_k - Quantize(W_k)||_F / ||W_k||_F
-   ```
+   计算每层的相对量化误差：Error_k = ||W_k - Quantize(W_k)||_F / ||W_k||_F
 
 2. **激活值敏感度**：
-   ```
-   Sensitivity_k = std(Activation_k) / mean(|Activation_k|)
-   ```
+   衡量激活值变化程度：Sensitivity_k = std(Activation_k) / mean(|Activation_k|)
 
 3. **巨大激活值密度**：
-   ```
-   Massive_k = count(|X| > 100 * mean(|X|)) / total_elements
-   ```
+   统计异常大值比例：Massive_k = count(|X| > 100 * mean(|X|)) / total_elements
 
 综合得分：`Score_k = Error_k * Sensitivity_k * (1 + 10 * Massive_k)`
 
@@ -291,21 +275,16 @@ Input →  ├→ Layer_k(H_2) →┼→ Add → Layer_k+1
 对于共享权重的复制层，探索不同的 scaling factor 配置：
 
 **策略 1 - 网格偏移**：
-```python
-# 原始层
-scale_1 = optimal_scale
-# 复制层使用轻微偏移
-scale_2 = optimal_scale * 1.05
-scale_3 = optimal_scale * 0.95
-```
+复制层使用基于最优 scale 的轻微偏移：
+- 原始层：scale_1 = optimal_scale
+- 复制层 1：scale_2 = optimal_scale * 1.05
+- 复制层 2：scale_3 = optimal_scale * 0.95
 
 **策略 2 - 分位数调整**：
-```python
-# 基于激活分布的不同分位数
-scale_1 = quantile(activations, 0.99)
-scale_2 = quantile(activations, 0.995)
-scale_3 = quantile(activations, 0.98)
-```
+基于激活分布的不同分位数设置 scale：
+- scale_1 = quantile(activations, 0.99)
+- scale_2 = quantile(activations, 0.995)
+- scale_3 = quantile(activations, 0.98)
 
 **策略 3 - 自适应搜索**：
 使用贝叶斯优化搜索每层的最佳 scale 组合。
@@ -340,11 +319,9 @@ scale_3 = quantile(activations, 0.98)
 | 512 | 14.12 | 0.5× | -12% |
 
 **异质 Group Size**（复制层使用不同配置）：
-```
-原始层：group_size = 128
-复制层1：group_size = 64
-复制层2：group_size = 256
-```
+- 原始层：group_size = 128
+- 复制层 1：group_size = 64
+- 复制层 2：group_size = 256
 
 结果：PPL = 12.68，优于同质配置，表明差异化 group size 有助于捕获不同粒度的量化模式。
 
@@ -353,12 +330,10 @@ scale_3 = quantile(activations, 0.98)
 探索激活量化的差异化策略：
 
 **策略 1 - 裁剪阈值差异**：
-```python
-# 不同层使用不同的激活裁剪比例
-clip_ratio_1 = 0.90  # 保守裁剪
-clip_ratio_2 = 0.95  # 标准裁剪
-clip_ratio_3 = 0.85  # 激进裁剪
-```
+不同层使用不同的激活裁剪比例：
+- clip_ratio_1 = 0.90（保守裁剪）
+- clip_ratio_2 = 0.95（标准裁剪）
+- clip_ratio_3 = 0.85（激进裁剪）
 
 **策略 2 - 量化位宽混合**：
 - 原始层：8-bit 激活
@@ -448,10 +423,8 @@ clip_ratio_3 = 0.85  # 激进裁剪
 - **净增加**：+75%
 
 **内存访问模式优化**：
-```
-传统：Load W → Compute → Load W' → Compute
-优化：Load W → Compute → Compute (复用) → Load W'
-```
+- 传统模式：Load W → Compute → Load W' → Compute
+- 优化模式：Load W → Compute → Compute (复用) → Load W'
 
 在内存带宽受限的场景下（如长序列生成），实际延迟增加可降至 40-50%。
 
