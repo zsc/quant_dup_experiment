@@ -24,12 +24,8 @@ DeepSeek-MoE 采用了细粒度专家设计，每个 MoE 层包含多个轻量�
 MoE 的核心是 top-k 专家选择机制，通常每个 token 只激活 k 个专家（如 k=2）。这种稀疏激活模式对量化提出了独特挑战：
 
 **1. 激活分布的高度不均匀性**
-```
-Expert激活统计示例（基于DeepSeek-67B）：
-- Top 10% 热门专家：处理 35% 的 tokens
-- Bottom 50% 冷门专家：仅处理 8% 的 tokens
-- 激活频率差异：最高/最低 > 100×
-```
+
+基于 DeepSeek-67B 的分析显示，专家激活呈现极度不均匀分布：前 10% 的热门专家处理 35% 的 tokens，而后 50% 的冷门专家仅处理 8% 的 tokens，激活频率差异超过 100 倍。
 
 这种不均匀性意味着：
 - 热门专家的量化误差会被放大，影响大量 tokens
@@ -50,13 +46,8 @@ Router（门控网络）虽然计算量小，但其输出直接决定专家选�
 通过对 DeepSeek 模型在不同数据集上的激活模式分析，我们发现了几个关键现象：
 
 **1. 专家专业化程度**
-```python
-# 专家激活模式聚类分析
-专家类型分布：
-- 通用专家（25%）：对多种输入类型都有响应
-- 领域专家（60%）：专注特定主题（如代码、数学、对话）
-- 特化专家（15%）：仅对极少数特定模式激活
-```
+
+专家激活模式聚类分析显示三种主要类型：通用专家（25%）对多种输入类型都有响应，领域专家（60%）专注特定主题如代码、数学或对话，特化专家（15%）仅对极少数特定模式激活。
 
 不同类型专家的量化策略应该不同：
 - 通用专家：需要保守量化，优先保持精度
@@ -64,11 +55,8 @@ Router（门控网络）虽然计算量小，但其输出直接决定专家选�
 - 特化专家：可能需要完全避免量化或使用更高比特
 
 **2. 层间激活模式演化**
-```
-早期层（1-8）：专家选择相对均匀，语义特征不明显
-中间层（9-24）：开始出现明显的专业化，某些专家稳定处理特定模式
-后期层（25-32）：高度专业化，专家选择模式基本固定
-```
+
+观察到清晰的层间演化规律：早期层（1-8）专家选择相对均匀，语义特征不明显；中间层（9-24）开始出现明显的专业化，某些专家稳定处理特定模式；后期层（25-32）高度专业化，专家选择模式基本固定。
 
 这种演化模式指导我们的复制策略：
 - 早期层：均匀复制可能效果更好
@@ -79,30 +67,14 @@ Router（门控网络）虽然计算量小，但其输出直接决定专家选�
 MoE 的稀疏激活为内存优化提供了独特机会：
 
 **1. 专家缓存策略**
-```
-传统密集模型：每层权重 32GB（以 70B 模型为例）
-MoE 模型：激活专家 2GB × k，未激活专家可换出
 
-层复制影响：
-- 复制的专家权重可常驻缓存
-- 通过预测专家激活模式进行预取
-- 热门专家优先复制，最大化缓存命中
-```
+对比传统密集模型每层 32GB 权重，MoE 模型仅需加载激活专家（2GB × k），未激活专家可换出。层复制带来的优势包括：复制的专家权重可常驻缓存、可通过预测专家激活模式进行预取、热门专家优先复制以最大化缓存命中。
 
 **2. 批处理优化**
-MoE 的批处理需要考虑不同 token 可能激活不同专家：
-```
-批次内专家激活矩阵示例（batch_size=32）：
-Expert_1: [1,0,1,1,0,0,1,0,...] (12/32 激活)
-Expert_2: [0,1,0,0,1,1,0,1,...] (10/32 激活)
-...
-Expert_16: [0,0,0,1,0,0,0,0,...] (2/32 激活)
 
-优化策略：
-- 动态批次重组，相同专家激活的 tokens 聚合
-- 专家内并行计算，减少内存随机访问
-- 复制层可处理多批次，分摊权重加载成本
-```
+MoE 的批处理需要考虑不同 token 可能激活不同专家。在 batch_size=32 的情况下，不同专家的激活率差异很大（如 Expert_1 激活 12/32，Expert_16 仅激活 2/32）。
+
+优化策略包括：动态批次重组以聚合相同专家激活的 tokens、专家内并行计算减少内存随机访问、复制层可处理多批次以分摊权重加载成本。
 
 ### 7.1.5 量化误差的级联效应
 
@@ -135,20 +107,10 @@ MoE 架构的专家网络为旋转和复制技术提供了独特的优化空间�
 通过对 DeepSeek-67B 模型的深入分析，我们发现巨大激活值（massive activations）在 MoE 专家中呈现独特的分布模式：
 
 **1. 专家间的异质性**
-```python
-# 巨大激活值统计（定义为 >100 的激活值）
-专家类型与巨大激活值分布：
-- 共享专家：平均 15.3% 的激活值为巨大值（最高）
-- 高频专家（top 20%）：平均 8.7% 
-- 中频专家（middle 60%）：平均 3.2%
-- 低频专家（bottom 20%）：平均 0.8%
 
-层间分布：
-- 层 1-8：巨大激活值占比 < 2%
-- 层 9-16：快速上升至 5-10%
-- 层 17-24：稳定在 10-15%
-- 层 25-32：部分专家超过 20%
-```
+巨大激活值（>100）在不同专家类型中的分布差异显著：共享专家平均 15.3%（最高），高频专家（top 20%）平均 8.7%，中频专家（middle 60%）平均 3.2%，低频专家（bottom 20%）平均 0.8%。
+
+层间分布呈现递增趋势：层 1-8 占比低于 2%，层 9-16 快速上升至 5-10%，层 17-24 稳定在 10-15%，层 25-32 部分专家超过 20%。
 
 这种分布揭示了重要规律：
 - **共享专家是巨大激活值的主要来源**，需要特殊处理
@@ -156,552 +118,176 @@ MoE 架构的专家网络为旋转和复制技术提供了独特的优化空间�
 - **深层专家的巨大激活值问题更严重**，需要更强的补偿
 
 **2. 巨大激活值的模式分析**
-```python
-# 激活值模式可视化
-Expert_5 (高频专家) 激活值分布：
-  Token位置:  [CLS] The  cat  sat  on  the  mat  [SEP]
-  激活幅度:   [256] [12] [8]  [15] [324] [9] [11] [198]
-  
-观察：
+
+以 Expert_5（高频专家）为例，激活值在不同 token 位置呈现特定模式：特殊标记位置（如 [CLS]、[SEP]）和某些内容词（如 "on"）触发极高激活值（>200），而普通词汇激活值较低（<20）。
+
+关键观察：
 - 位置相关性：特定位置（如特殊标记）更容易触发巨大激活
 - 内容相关性：某些语义模式稳定触发巨大激活
 - 专家特化：每个专家有其独特的触发模式
-```
 
 ### 7.2.2 重要 Expert 识别（基于量化敏感度）
 
 识别量化敏感的关键专家是优化的第一步。我们设计了多维度的重要性评估框架：
 
 **1. 量化敏感度指标**
-```python
-def compute_expert_sensitivity(expert, calibration_data):
-    """计算专家的量化敏感度"""
-    
-    # 指标1：输出变化率
-    output_fp32 = expert(calibration_data)
-    output_int2 = quantize_and_compute(expert, bits=2)
-    output_sensitivity = relative_error(output_fp32, output_int2)
-    
-    # 指标2：梯度敏感度（使用泰勒展开近似）
-    gradient_sensitivity = compute_gradient_norm(expert, calibration_data)
-    
-    # 指标3：激活频率加权
-    activation_frequency = get_expert_activation_freq(expert)
-    
-    # 综合得分
-    sensitivity_score = (
-        0.5 * output_sensitivity + 
-        0.3 * gradient_sensitivity + 
-        0.2 * activation_frequency
-    )
-    return sensitivity_score
 
-# DeepSeek-67B 的敏感度分析结果
-高敏感专家特征：
+专家量化敏感度通过三个维度综合评估：输出变化率（比较 FP32 和 INT2 输出的相对误差）、梯度敏感度（使用泰勒展开近似）、激活频率加权。综合得分采用加权组合：50% 输出敏感度 + 30% 梯度敏感度 + 20% 激活频率。
+
+DeepSeek-67B 的敏感度分析显示四类专家特征：
 1. 共享专家：敏感度得分 > 0.8
 2. 代码/数学专家：敏感度得分 0.6-0.8
 3. 通用语言专家：敏感度得分 0.4-0.6
 4. 特化小众专家：敏感度得分 < 0.4
-```
 
 **2. 动态重要性评估**
-```python
-# 考虑输入分布的动态重要性
-def compute_dynamic_importance(expert, input_distribution):
-    """根据实际输入分布计算专家重要性"""
-    
-    importance_scores = []
-    for batch in input_distribution:
-        # 该专家对当前批次的贡献
-        contribution = compute_expert_contribution(expert, batch)
-        # 移除该专家后的性能下降
-        ablation_loss = compute_ablation_effect(expert, batch)
-        
-        importance_scores.append(contribution * ablation_loss)
-    
-    return aggregate_importance(importance_scores)
-```
+
+动态重要性评估考虑实际输入分布，通过两个关键指标计算：专家对每个批次的贡献度，以及移除该专家后的性能下降（ablation effect）。最终重要性得分为贡献度与 ablation loss 的乘积在所有批次上的聚合。
 
 ### 7.2.3 通过多种旋转产生 ensemble 策略
 
 基于 DFRot 的发现，我们为 MoE 专家设计了多旋转集成策略：
 
 **1. 专家级旋转优化**
-```python
-def optimize_expert_rotations(expert, massive_activation_threshold=100):
-    """为单个专家优化多个旋转矩阵"""
-    
-    # 步骤1：识别该专家的巨大激活值模式
-    activation_patterns = analyze_expert_activations(expert)
-    massive_ratio = compute_massive_ratio(activation_patterns, massive_activation_threshold)
-    
-    # 步骤2：根据巨大激活值比例选择策略
-    if massive_ratio > 0.15:  # 高巨大激活值专家
-        # 使用 DFRot 风格的优化
-        rotation_matrices = []
-        for gamma in [50, 100, 150, 200]:
-            R = optimize_rotation_weighted(expert, gamma=gamma)
-            rotation_matrices.append(R)
-    else:  # 低巨大激活值专家
-        # 使用标准 Hadamard 变换的变体
-        rotation_matrices = [
-            get_hadamard_matrix(expert.weight.shape),
-            get_randomized_hadamard(expert.weight.shape, seed=42),
-            get_block_hadamard(expert.weight.shape, block_size=128)
-        ]
-    
-    return rotation_matrices
 
-# 实际应用示例
-Expert_7 (共享专家) 旋转配置：
-- 旋转1：γ=200 的 DFRot 优化（专注巨大激活值）
-- 旋转2：γ=100 的 DFRot 优化（平衡考虑）
-- 旋转3：γ=50 的 DFRot 优化（更多关注普通值）
-- 旋转4：标准 Hadamard（作为基线）
-```
+专家级旋转优化根据巨大激活值比例采用不同策略：
+
+- 高巨大激活值专家（比例 > 15%）：使用 DFRot 优化，针对不同 γ 值（50、100、150、200）生成多个旋转矩阵
+- 低巨大激活值专家：使用 Hadamard 变换的多种变体（标准版、随机化版、块版本）
+
+以 Expert_7（共享专家）为例的典型配置包含四种旋转：γ=200 的 DFRot（专注巨大激活值）、γ=100 的 DFRot（平衡考虑）、γ=50 的 DFRot（更多关注普通值）、标准 Hadamard（作为基线）。
 
 **2. 旋转组合的差异化设计**
-```python
-def create_rotation_ensemble(expert_rotations, num_copies=2):
-    """创建旋转组合以最大化多样性"""
-    
-    # 目标：选择最互补的旋转组合
-    selected_rotations = []
-    
-    if num_copies == 2:
-        # 双副本：选择最不相似的两个旋转
-        similarity_matrix = compute_rotation_similarity(expert_rotations)
-        idx1, idx2 = get_most_dissimilar_pair(similarity_matrix)
-        selected_rotations = [expert_rotations[idx1], expert_rotations[idx2]]
-        
-    elif num_copies > 2:
-        # 多副本：使用贪心算法最大化总体多样性
-        selected_rotations = greedy_diverse_selection(
-            expert_rotations, 
-            num_copies,
-            diversity_metric='angular_distance'
-        )
-    
-    return selected_rotations
-```
+
+旋转组合设计以最大化多样性为目标：
+- 双副本情况：通过计算旋转相似度矩阵，选择最不相似的两个旋转
+- 多副本情况：使用贪心算法基于角度距离度量最大化总体多样性
+
+这种设计确保不同副本产生互补的量化误差模式，提高集成效果。
 
 ### 7.2.4 选择性 Expert 复制
 
 基于量化敏感度分析，我们设计了选择性专家复制策略，以最大化精度恢复同时控制计算开销：
 
 **1. 复制决策框架**
-```python
-def select_experts_for_duplication(moe_layer, duplication_budget=0.3):
-    """选择需要复制的专家"""
-    
-    # 计算每个专家的复制收益
-    duplication_benefits = []
-    for expert_id, expert in enumerate(moe_layer.experts):
-        # 综合考虑多个因素
-        sensitivity = compute_expert_sensitivity(expert)
-        activation_freq = get_activation_frequency(expert_id)
-        massive_activation_ratio = get_massive_ratio(expert)
-        
-        # 复制收益 = 敏感度 × 激活频率 × 巨大激活值影响
-        benefit = sensitivity * activation_freq * (1 + massive_activation_ratio)
-        duplication_benefits.append((expert_id, benefit))
-    
-    # 按收益排序，选择前 N 个专家复制
-    duplication_benefits.sort(key=lambda x: x[1], reverse=True)
-    num_to_duplicate = int(len(moe_layer.experts) * duplication_budget)
-    
-    selected_experts = [exp_id for exp_id, _ in duplication_benefits[:num_to_duplicate]]
-    
-    # 特殊处理：确保共享专家被复制
-    if hasattr(moe_layer, 'shared_experts'):
-        for shared_id in moe_layer.shared_expert_ids:
-            if shared_id not in selected_experts:
-                selected_experts.append(shared_id)
-    
-    return selected_experts
 
-# DeepSeek-67B 复制策略示例
-层 24 专家复制决策：
+专家复制决策基于综合收益评估，考虑三个关键因素：量化敏感度、激活频率、巨大激活值比例。复制收益计算公式为：敏感度 × 激活频率 × (1 + 巨大激活值影响)。
+
+在给定复制预算（如 30%）下，按收益排序选择专家，并确保共享专家始终被复制。
+
+DeepSeek-67B 层 24 的典型复制决策：
 - 共享专家 (2个)：100% 复制
 - 高频专家 (8个)：75% 复制 (6个)
 - 中频专家 (48个)：25% 复制 (12个)
 - 低频专家 (6个)：0% 复制
-总复制率：20/64 = 31.25%
-```
+- 总复制率：20/64 = 31.25%
 
 **2. 差异化复制配置**
-```python
-def configure_expert_duplication(expert, duplication_type='rotation_ensemble'):
-    """配置专家的复制策略"""
-    
-    if duplication_type == 'rotation_ensemble':
-        # 使用不同旋转矩阵的集成
-        config = {
-            'num_copies': 2,
-            'rotation_1': optimize_rotation_weighted(expert, gamma=200),
-            'rotation_2': optimize_rotation_weighted(expert, gamma=50),
-            'quantization_params': {
-                'copy_1': {'scale_factor': 1.0, 'zero_point': 0},
-                'copy_2': {'scale_factor': 0.95, 'zero_point': 2}  # 轻微偏移
-            }
-        }
-    
-    elif duplication_type == 'activation_variant':
-        # 使用不同激活量化参数
-        config = {
-            'num_copies': 2,
-            'shared_rotation': get_hadamard_matrix(expert.weight.shape),
-            'activation_params': {
-                'copy_1': {'clip_ratio': 0.99, 'group_size': 128},
-                'copy_2': {'clip_ratio': 0.95, 'group_size': 64}
-            }
-        }
-    
-    elif duplication_type == 'hybrid':
-        # 混合策略：旋转 + 量化参数
-        config = {
-            'num_copies': 3,
-            'rotations': [
-                optimize_rotation_weighted(expert, gamma=200),
-                optimize_rotation_weighted(expert, gamma=100),
-                get_hadamard_matrix(expert.weight.shape)
-            ],
-            'quantization_grid_offset': [0, 0.25, 0.5],  # 量化网格偏移
-            'stochastic_rounding': [False, True, True]   # 随机舍入
-        }
-    
-    return config
-```
+
+专家复制支持三种主要策略：
+
+- **旋转集成**：使用不同旋转矩阵（如 γ=200 和 γ=50 的 DFRot），配合轻微不同的量化参数（缩放因子和零点偏移）
+- **激活变体**：共享相同旋转但使用不同激活量化参数（裁剪比例、组大小）
+- **混合策略**：结合多种旋转（DFRot 不同 γ 值 + Hadamard）、量化网格偏移、随机舍入等技术
+
+每种策略针对不同场景优化：旋转集成适合巨大激活值问题严重的专家，激活变体适合激活分布变化大的专家，混合策略提供最大灵活性。
 
 **3. 复制专家的执行策略**
-```python
-def execute_duplicated_expert(expert_copies, input_tensor, execution_mode='weighted_sum'):
-    """执行复制的专家并聚合结果"""
-    
-    outputs = []
-    for copy_config in expert_copies:
-        # 应用旋转
-        rotated_input = input_tensor @ copy_config['rotation'].T
-        
-        # 量化激活值
-        quantized_input = quantize_activation(
-            rotated_input, 
-            **copy_config['activation_params']
-        )
-        
-        # 专家计算
-        output = expert(quantized_input)
-        
-        # 反旋转
-        output = output @ copy_config['rotation']
-        outputs.append(output)
-    
-    # 聚合多个副本的输出
-    if execution_mode == 'weighted_sum':
-        # 基于置信度的加权和
-        weights = compute_output_confidence(outputs)
-        final_output = sum(w * out for w, out in zip(weights, outputs))
-    
-    elif execution_mode == 'majority_vote':
-        # 适用于分类任务的投票机制
-        final_output = majority_voting(outputs)
-    
-    elif execution_mode == 'selective':
-        # 根据输入特征选择最合适的副本
-        best_copy_idx = select_best_copy(input_tensor, expert_copies)
-        final_output = outputs[best_copy_idx]
-    
-    return final_output
-```
+
+复制专家执行包含四个步骤：应用旋转变换、量化激活值、专家计算、反旋转恢复。
+
+输出聚合支持三种模式：
+- **加权和**：基于输出置信度计算权重，适合连续值预测
+- **投票机制**：多数投票，适合分类任务
+- **选择性执行**：根据输入特征动态选择最合适的副本
+
+每种模式的选择取决于任务特性和计算约束。
 
 ### 7.2.5 Router/Gate 保持全精度
 
 Router 是 MoE 架构的核心组件，其精度直接影响专家选择的准确性。我们的策略是完全避免 Router 量化：
 
 **1. Router 精度影响分析**
-```python
-# Router 量化实验
-def analyze_router_quantization_impact(moe_layer, test_data):
-    """分析 Router 量化对模型性能的影响"""
-    
-    results = {}
-    
-    # 基线：全精度 Router
-    baseline_outputs = []
-    baseline_expert_selections = []
-    for batch in test_data:
-        router_logits = moe_layer.router(batch)
-        expert_indices = torch.topk(router_logits, k=2).indices
-        baseline_expert_selections.append(expert_indices)
-        output = moe_layer(batch)
-        baseline_outputs.append(output)
-    
-    # 量化 Router 的影响
-    for bits in [8, 4, 2]:
-        quantized_outputs = []
-        quantized_selections = []
-        selection_changes = 0
-        
-        for i, batch in enumerate(test_data):
-            # 量化 Router 权重
-            quantized_router = quantize_linear_layer(moe_layer.router, bits=bits)
-            router_logits = quantized_router(batch)
-            expert_indices = torch.topk(router_logits, k=2).indices
-            
-            # 统计专家选择变化
-            if not torch.equal(expert_indices, baseline_expert_selections[i]):
-                selection_changes += 1
-            
-            quantized_selections.append(expert_indices)
-            
-        results[f'{bits}bit'] = {
-            'selection_change_rate': selection_changes / len(test_data),
-            'output_error': compute_relative_error(baseline_outputs, quantized_outputs)
-        }
-    
-    return results
 
-# 实验结果
-Router 量化影响（DeepSeek-67B，层24）：
+Router 量化实验通过比较不同量化位宽下的专家选择变化率和输出误差，揭示了 Router 对量化的极高敏感性。
+
+DeepSeek-67B 层 24 的实验结果：
 - 8-bit：2.3% 选择变化，0.8% 输出误差
 - 4-bit：18.7% 选择变化，12.4% 输出误差
 - 2-bit：67.2% 选择变化，89.3% 输出误差
 
-结论：即使 8-bit 量化也会造成不可忽视的影响
-```
+关键发现：即使 8-bit 量化也会造成不可忽视的影响，Router 量化导致的专家选择错误远比专家内部量化误差严重。因此必须保持 Router 全精度。
 
 **2. Router 优化策略**
-```python
-def optimize_router_for_quantized_experts(moe_layer, quantized_experts):
-    """优化 Router 以适应量化后的专家"""
-    
-    # 策略1：重新校准 Router 输出
-    # 由于专家量化后能力下降，需要调整选择偏好
-    
-    calibration_data = load_calibration_dataset()
-    
-    # 收集量化前后专家的表现差异
-    expert_degradation = []
-    for expert_id, expert in enumerate(moe_layer.experts):
-        original_perf = evaluate_expert(expert, calibration_data)
-        quantized_perf = evaluate_expert(quantized_experts[expert_id], calibration_data)
-        degradation = (original_perf - quantized_perf) / original_perf
-        expert_degradation.append(degradation)
-    
-    # 调整 Router 偏置，减少对退化严重专家的选择
-    router_bias_adjustment = torch.tensor(expert_degradation) * -0.5
-    moe_layer.router.bias += router_bias_adjustment
-    
-    # 策略2：增加 Router 的温度参数
-    # 使选择更加平滑，减少边界敏感性
-    moe_layer.router_temperature = 1.2  # 原始值通常为 1.0
-    
-    return moe_layer
-```
+
+Router 优化采用两种主要策略适应量化后的专家：
+
+- **偏置校准**：测量每个专家量化前后的性能退化，根据退化程度调整 Router 偏置（退化率 × -0.5），减少对严重退化专家的选择
+- **温度调整**：将 Router 温度参数从 1.0 提高到 1.2，使专家选择更平滑，降低边界敏感性
+
+这些调整在保持 Router 全精度的同时，优化其与量化专家的配合。
 
 ### 7.2.6 专家级集成策略
 
 将旋转、复制和量化参数优化结合，形成专家级的集成策略：
 
 **1. 层次化集成架构**
-```python
-class ExpertEnsembleStrategy:
-    """专家级集成策略管理器"""
-    
-    def __init__(self, expert, strategy_config):
-        self.expert = expert
-        self.num_copies = strategy_config['num_copies']
-        self.ensemble_type = strategy_config['ensemble_type']
-        
-        # 初始化不同层次的差异化
-        self._init_rotations(strategy_config)
-        self._init_quantization_params(strategy_config)
-        self._init_execution_policy(strategy_config)
-    
-    def _init_rotations(self, config):
-        """初始化旋转矩阵集合"""
-        if config['rotation_strategy'] == 'massive_aware':
-            # 基于巨大激活值分析的旋转
-            massive_ratio = analyze_massive_activations(self.expert)
-            if massive_ratio > 0.1:
-                # 高巨大激活值：使用 DFRot 优化
-                self.rotations = [
-                    optimize_dfrot(self.expert, gamma=g) 
-                    for g in [50, 100, 150, 200]
-                ][:self.num_copies]
-            else:
-                # 低巨大激活值：使用 Hadamard 变体
-                self.rotations = generate_hadamard_variants(
-                    self.expert.weight.shape, 
-                    self.num_copies
-                )
-        
-    def _init_quantization_params(self, config):
-        """初始化量化参数组合"""
-        self.quant_params = []
-        
-        for i in range(self.num_copies):
-            params = {
-                'weight_bits': 2,  # 固定 2-bit 权重
-                'activation_bits': 8 if i == 0 else 16,  # 首个副本 8-bit，其他 16-bit
-                'scale_factor': 1.0 - i * 0.05,  # 递减的缩放因子
-                'zero_point': i * 2,  # 递增的零点偏移
-                'group_size': 128 // (i + 1),  # 递减的组大小
-                'clip_ratio': 0.99 - i * 0.02,  # 递减的裁剪比例
-                'rounding_mode': 'nearest' if i == 0 else 'stochastic'
-            }
-            self.quant_params.append(params)
-    
-    def forward(self, input_tensor, router_weight=1.0):
-        """执行集成前向传播"""
-        outputs = []
-        
-        for i in range(self.num_copies):
-            # 应用旋转
-            x = torch.matmul(input_tensor, self.rotations[i].T)
-            
-            # 激活量化
-            x = quantize_activation(x, **self.quant_params[i])
-            
-            # 专家计算（使用量化权重）
-            output = self.expert.forward_quantized(x, self.quant_params[i])
-            
-            # 反旋转
-            output = torch.matmul(output, self.rotations[i])
-            
-            outputs.append(output)
-        
-        # 集成输出
-        final_output = self._ensemble_outputs(outputs, router_weight)
-        return final_output
-    
-    def _ensemble_outputs(self, outputs, router_weight):
-        """智能集成多个输出"""
-        if self.ensemble_type == 'variance_weighted':
-            # 基于输出方差的加权
-            variances = [torch.var(out) for out in outputs]
-            weights = F.softmax(-torch.tensor(variances), dim=0)
-            return sum(w * out for w, out in zip(weights, outputs))
-        
-        elif self.ensemble_type == 'learned_mixture':
-            # 学习的混合权重
-            return self.mixture_weights @ torch.stack(outputs)
-        
-        else:  # 'simple_average'
-            return torch.stack(outputs).mean(dim=0)
-```
+
+专家级集成策略管理器实现了三层差异化：
+
+**旋转层**：根据巨大激活值比例自动选择策略
+- 高比例（>10%）：使用不同 γ 值的 DFRot 优化
+- 低比例：使用 Hadamard 变换的多种变体
+
+**量化参数层**：为每个副本设置递进式参数
+- 激活位宽：首个副本 8-bit，其他 16-bit
+- 缩放因子、零点、组大小、裁剪比例均递进变化
+- 舍入模式：首个最近邻，其他随机舍入
+
+**输出集成层**：支持三种智能聚合方式
+- 方差加权：低方差输出获得更高权重
+- 学习混合：使用可训练的混合权重
+- 简单平均：直接求均值
+
+这种层次化设计确保了最大的灵活性和优化空间。
 
 **2. 专家组协同优化**
-```python
-def optimize_expert_group_coordination(moe_layer, expert_groups):
-    """优化专家组之间的协同"""
-    
-    # 根据专家激活模式进行分组
-    groups = {
-        'always_active': [],      # 共享专家
-        'high_frequency': [],     # 高频专家
-        'domain_specific': [],    # 领域专家
-        'rare_specialized': []    # 特化专家
-    }
-    
-    # 专家分组
-    for expert_id, expert in enumerate(moe_layer.experts):
-        activation_pattern = analyze_activation_pattern(expert_id)
-        if is_shared_expert(expert_id):
-            groups['always_active'].append(expert_id)
-        elif activation_pattern['frequency'] > 0.1:
-            groups['high_frequency'].append(expert_id)
-        elif activation_pattern['domain_concentration'] > 0.7:
-            groups['domain_specific'].append(expert_id)
-        else:
-            groups['rare_specialized'].append(expert_id)
-    
-    # 为每组设计不同的优化策略
-    group_strategies = {
-        'always_active': {
-            'duplication_priority': 1.0,
-            'num_copies': 3,
-            'rotation_diversity': 'high',
-            'quant_conservative': True
-        },
-        'high_frequency': {
-            'duplication_priority': 0.8,
-            'num_copies': 2,
-            'rotation_diversity': 'medium',
-            'quant_conservative': False
-        },
-        'domain_specific': {
-            'duplication_priority': 0.5,
-            'num_copies': 2,
-            'rotation_diversity': 'targeted',
-            'quant_conservative': False
-        },
-        'rare_specialized': {
-            'duplication_priority': 0.2,
-            'num_copies': 1,
-            'rotation_diversity': 'none',
-            'quant_conservative': True
-        }
-    }
-    
-    return groups, group_strategies
-```
+
+专家组协同优化基于激活模式将专家分为四类，每类采用定制化策略：
+
+**共享专家**（always_active）
+- 最高优先级（1.0），3个副本
+- 高旋转多样性，保守量化策略
+
+**高频专家**（frequency > 0.1）
+- 优先级 0.8，2个副本
+- 中等旋转多样性，标准量化
+
+**领域专家**（domain_concentration > 0.7）
+- 优先级 0.5，2个副本
+- 针对性旋转，标准量化
+
+**特化专家**（其他）
+- 最低优先级 0.2，不复制
+- 无旋转优化，保守量化
+
+这种分组策略确保资源集中在影响最大的专家上。
 
 **3. 运行时动态调整**
-```python
-class DynamicExpertEnsemble:
-    """支持运行时动态调整的专家集成"""
-    
-    def __init__(self, expert_ensemble, adaptation_config):
-        self.ensemble = expert_ensemble
-        self.adaptation_enabled = adaptation_config['enabled']
-        self.history_window = adaptation_config['history_window']
-        self.activation_history = deque(maxlen=self.history_window)
-        
-    def forward(self, input_tensor, context=None):
-        """带上下文感知的前向传播"""
-        
-        if self.adaptation_enabled and context is not None:
-            # 基于上下文调整集成策略
-            ensemble_weights = self._compute_context_weights(context)
-            
-            # 记录激活模式
-            self.activation_history.append({
-                'input_norm': torch.norm(input_tensor).item(),
-                'context_type': context.get('domain', 'general'),
-                'timestamp': time.time()
-            })
-            
-            # 动态选择最合适的副本组合
-            if self._should_use_conservative_mode():
-                # 使用更保守的量化参数
-                return self.ensemble.forward_conservative(input_tensor)
-            else:
-                # 正常集成
-                return self.ensemble.forward(input_tensor, ensemble_weights)
-        else:
-            # 标准前向传播
-            return self.ensemble.forward(input_tensor)
-    
-    def _should_use_conservative_mode(self):
-        """判断是否应使用保守模式"""
-        if len(self.activation_history) < 10:
-            return False
-        
-        # 检查最近的激活模式
-        recent_norms = [h['input_norm'] for h in self.activation_history[-10:]]
-        
-        # 如果输入变化剧烈，使用保守模式
-        if np.std(recent_norms) > np.mean(recent_norms) * 0.5:
-            return True
-        
-        # 如果遇到罕见领域，使用保守模式
-        recent_domains = [h['context_type'] for h in self.activation_history[-5:]]
-        if 'rare' in recent_domains or 'unknown' in recent_domains:
-            return True
-        
-        return False
-```
+
+动态专家集成支持基于历史激活模式的自适应执行：
+
+**核心机制**：
+- 维护固定窗口的激活历史（输入范数、领域类型、时间戳）
+- 根据上下文动态计算集成权重
+- 自动切换保守/正常执行模式
+
+**保守模式触发条件**：
+- 输入变化剧烈：标准差 > 均值 × 0.5
+- 遇到罕见或未知领域
+- 历史数据不足（<10个样本）
+
+这种动态调整机制使系统能够自适应不同的输入分布，在保持性能的同时提高鲁棒性。
 
 ## 7.3 MoE 特定优化结果
 
@@ -710,48 +296,16 @@ class DynamicExpertEnsemble:
 ### 7.3.1 实验设置与基线
 
 **1. 模型配置**
-```
-DeepSeek-67B MoE 配置：
-- 总参数：67B
-- 激活参数：13B（约 20%）
-- MoE 层数：28
-- 每层专家数：64
-- 激活专家数（k）：2
-- 共享专家数：2
-- FFN 隐藏维度：14336
-```
+
+DeepSeek-67B MoE 的关键参数：总参数 67B（激活参数 13B，约 20%），28 个 MoE 层，每层 64 个专家，每次激活 2 个专家（k=2），包含 2 个共享专家，FFN 隐藏维度 14336。
 
 **2. 量化配置**
-```python
-quantization_configs = {
-    'baseline': {
-        'weight_bits': 2,
-        'activation_bits': 8,
-        'group_size': 128,
-        'symmetric': True,
-        'calibration_samples': 128
-    },
-    'rotation_only': {
-        'weight_bits': 2,
-        'activation_bits': 8,
-        'rotation': 'hadamard',
-        'online_rotation': True
-    },
-    'duplication_only': {
-        'weight_bits': 2,
-        'activation_bits': 8,
-        'duplication_ratio': 0.3,
-        'duplication_strategy': 'sensitivity_based'
-    },
-    'rotation_duplication': {
-        'weight_bits': 2,
-        'activation_bits': 8,
-        'rotation': 'dfrot_optimized',
-        'duplication_ratio': 0.3,
-        'ensemble_strategy': 'variance_weighted'
-    }
-}
-```
+
+实验对比四种配置：
+- **基线**：2-bit 权重、8-bit 激活、128 组大小、对称量化
+- **仅旋转**：增加 Hadamard 在线旋转
+- **仅复制**：30% 专家复制率，基于敏感度选择
+- **旋转+复制**：DFRot 优化旋转、30% 复制率、方差加权集成
 
 **3. 评估数据集**
 - WikiText-2（PPL 评估）
@@ -763,176 +317,144 @@ quantization_configs = {
 ### 7.3.2 量化误差分析
 
 **1. 专家级量化敏感度分布**
-```python
-# DeepSeek-67B 各层专家的量化敏感度热图
-Layer 1-7:   低敏感度（< 5% PPL 增加）
-Layer 8-14:  中等敏感度（5-15% PPL 增加）
-Layer 15-21: 高敏感度（15-30% PPL 增加）
-Layer 22-28: 极高敏感度（> 30% PPL 增加）
 
-专家类型敏感度：
-- 共享专家：平均 45.2% PPL 增加
-- 高频专家：平均 28.7% PPL 增加
-- 中频专家：平均 12.3% PPL 增加
-- 低频专家：平均 8.9% PPL 增加
-```
+DeepSeek-67B 的量化敏感度呈现明显的层间递增模式：
+- Layer 1-7：低敏感度（< 5% PPL 增加）
+- Layer 8-14：中等敏感度（5-15% PPL 增加）  
+- Layer 15-21：高敏感度（15-30% PPL 增加）
+- Layer 22-28：极高敏感度（> 30% PPL 增加）
+
+专家类型的敏感度差异显著：共享专家平均 45.2% PPL 增加，高频专家 28.7%，中频专家 12.3%，低频专家仅 8.9%。
 
 **2. 巨大激活值影响**
-```python
-# 不同处理策略下的巨大激活值误差
-处理策略                    相对误差    PPL 影响
-无特殊处理                  156.3%     +2.84
-Hadamard 旋转              89.2%      +1.73
-DFRot (γ=100)             42.7%      +0.95
-DFRot (γ=200)             31.4%      +0.68
-DFRot + 选择性复制         18.2%      +0.41
-```
+
+不同处理策略对巨大激活值误差的改善效果：
+- 无特殊处理：156.3% 相对误差，PPL +2.84
+- Hadamard 旋转：89.2% 相对误差，PPL +1.73
+- DFRot (γ=100)：42.7% 相对误差，PPL +0.95
+- DFRot (γ=200)：31.4% 相对误差，PPL +0.68
+- DFRot + 选择性复制：18.2% 相对误差，PPL +0.41
+
+结果显示组合策略能够将巨大激活值的负面影响降低近 90%。
 
 ### 7.3.3 优化策略效果对比
 
 **1. 整体性能对比**
-```python
-# WikiText-2 PPL 结果（越低越好）
-配置                        PPL        相对基线
-FP16 基线                   3.42       -
-INT8 量化                   3.89       +13.7%
-INT2 基线量化               8.76       +156.1%
-INT2 + Hadamard            6.23       +82.2%
-INT2 + DFRot               5.14       +50.3%
-INT2 + 复制（30%）         5.87       +71.6%
-INT2 + DFRot + 复制        4.26       +24.6%
 
-# 最优配置详情
-INT2 + DFRot + 复制:
-- 共享专家：3 副本，不同 γ 值的 DFRot
+WikiText-2 PPL 评估结果展示了渐进式改进：
+- FP16 基线：3.42
+- INT8 量化：3.89 (+13.7%)
+- INT2 基线量化：8.76 (+156.1%)
+- INT2 + Hadamard：6.23 (+82.2%)
+- INT2 + DFRot：5.14 (+50.3%)
+- INT2 + 复制（30%）：5.87 (+71.6%)
+- INT2 + DFRot + 复制：4.26 (+24.6%)
+
+最优配置（INT2 + DFRot + 复制）的策略细节：
+- 共享专家：3 副本，使用不同 γ 值的 DFRot
 - 高频专家：2 副本，γ=200 和 γ=100
 - 中频专家：选择性 2 副本（前 50%）
 - 低频专家：不复制
-- 总复制开销：+32% 计算量
-```
+- 总计算开销增加 32%
 
 **2. 分层效果分析**
-```python
-# 各层优化效果（PPL 降低百分比）
-层组        仅旋转    仅复制    旋转+复制
-1-7        8.2%      5.1%      11.8%
-8-14       15.7%     12.3%     24.2%
-15-21      22.4%     18.9%     35.7%
-22-28      31.6%     25.3%     48.2%
 
-观察：
-- 深层受益更明显
-- 旋转和复制有协同效应
-- 组合优化 > 单独优化之和
-```
+各层组的 PPL 降低效果对比：
+- Layer 1-7：仅旋转 8.2%，仅复制 5.1%，组合 11.8%
+- Layer 8-14：仅旋转 15.7%，仅复制 12.3%，组合 24.2%
+- Layer 15-21：仅旋转 22.4%，仅复制 18.9%，组合 35.7%
+- Layer 22-28：仅旋转 31.6%，仅复制 25.3%，组合 48.2%
+
+关键发现：深层受益更明显，旋转和复制存在协同效应（组合效果超过单独优化之和）。
 
 ### 7.3.4 下游任务表现
 
 **1. 任务性能保持率**
-```python
-# 相对于 FP16 基线的性能保持率
-任务          INT2基线   +旋转    +复制    +旋转复制
-MMLU          42.3%     61.2%    58.7%    79.4%
-HumanEval     38.1%     52.4%    55.3%    72.8%
-GSM8K         29.7%     48.3%    51.2%    68.9%
-HellaSwag     45.6%     64.8%    62.1%    81.2%
-Average       38.9%     56.7%    56.8%    75.6%
 
-# 领域特定表现
-代码任务：旋转 > 复制（代码专家巨大激活值多）
-数学任务：复制 > 旋转（需要多路径验证）
-常识推理：旋转 ≈ 复制（效果相当）
-```
+相对于 FP16 基线的性能保持率：
+- MMLU：INT2基线 42.3% → +旋转 61.2% → +复制 58.7% → +旋转复制 79.4%
+- HumanEval：INT2基线 38.1% → +旋转 52.4% → +复制 55.3% → +旋转复制 72.8%
+- GSM8K：INT2基线 29.7% → +旋转 48.3% → +复制 51.2% → +旋转复制 68.9%
+- HellaSwag：INT2基线 45.6% → +旋转 64.8% → +复制 62.1% → +旋转复制 81.2%
+- 平均：38.9% → 56.7% → 56.8% → 75.6%
+
+领域特定观察：代码任务旋转效果更好（代码专家巨大激活值多），数学任务复制效果更好（需要多路径验证），常识推理两者效果相当。
 
 **2. 专家激活模式变化**
-```python
-# 量化前后专家选择一致性
-配置                    Top-1一致性   Top-2一致性
-INT2 基线              42.7%        61.3%
-INT2 + Hadamard       58.3%        74.2%
-INT2 + DFRot          71.2%        85.6%
-INT2 + 复制           65.4%        79.8%
-INT2 + DFRot + 复制   78.9%        91.2%
 
-# Router 决策质量
-平均 Router 置信度变化：
-- 基线量化：-31.2%
-- 优化后：-12.4%
-```
+量化前后专家选择一致性分析：
+- INT2 基线：Top-1 一致性 42.7%，Top-2 一致性 61.3%
+- INT2 + Hadamard：Top-1 一致性 58.3%，Top-2 一致性 74.2%
+- INT2 + DFRot：Top-1 一致性 71.2%，Top-2 一致性 85.6%
+- INT2 + 复制：Top-1 一致性 65.4%，Top-2 一致性 79.8%
+- INT2 + DFRot + 复制：Top-1 一致性 78.9%，Top-2 一致性 91.2%
+
+Router 决策质量显著改善：平均置信度从基线量化的 -31.2% 提升到优化后的 -12.4%。
 
 ### 7.3.5 性能与资源权衡
 
 **1. 推理延迟分析**
-```python
-# M1 Pro 上的推理延迟（相对于 FP16）
-配置                  预填充    解码     内存
-FP16                 1.00×    1.00×    67GB
-INT8                 0.71×    0.68×    34GB
-INT2 基线            0.43×    0.41×    17GB
-INT2 + 旋转          0.52×    0.48×    17GB
-INT2 + 复制(30%)     0.58×    0.54×    17GB
-INT2 + 旋转复制      0.65×    0.61×    17GB
 
-# 吞吐量（tokens/秒）
-FP16: 12.3 tok/s
-INT2 + 旋转复制: 20.1 tok/s （+63%）
-```
+M1 Pro 上的相对推理延迟和内存占用：
+- FP16：预填充 1.00×，解码 1.00×，内存 67GB
+- INT8：预填充 0.71×，解码 0.68×，内存 34GB
+- INT2 基线：预填充 0.43×，解码 0.41×，内存 17GB
+- INT2 + 旋转：预填充 0.52×，解码 0.48×，内存 17GB
+- INT2 + 复制(30%)：预填充 0.58×，解码 0.54×，内存 17GB
+- INT2 + 旋转复制：预填充 0.65×，解码 0.61×，内存 17GB
+
+吞吐量提升显著：从 FP16 的 12.3 tok/s 提升到 INT2 + 旋转复制的 20.1 tok/s（+63%）。
 
 **2. 内存带宽利用**
-```python
-# 带宽利用率分析
-操作类型              带宽需求    计算密度
-权重加载（INT2）      0.25×      -
-Hadamard 变换        0.08×      高
-专家复制计算         0×         极高
-激活量化/反量化      0.12×      中
 
-# 复制策略的带宽优势
-单专家计算：17GB/s 带宽需求
-复制专家（2次）：8.5GB/s 带宽需求
-带宽节省：50%
-```
+不同操作的带宽需求和计算密度：
+- 权重加载（INT2）：0.25× 带宽需求
+- Hadamard 变换：0.08× 带宽需求，高计算密度
+- 专家复制计算：0× 带宽需求，极高计算密度
+- 激活量化/反量化：0.12× 带宽需求，中等计算密度
+
+复制策略的带宽优势明显：单专家计算需要 17GB/s 带宽，而复制专家（2次计算）仅需 8.5GB/s，带宽节省 50%。
 
 ### 7.3.6 消融实验
 
 **1. 旋转策略消融**
-```python
-# 不同旋转策略的效果（WikiText-2 PPL）
-旋转类型                          PPL     改进
-无旋转                           8.76     -
-随机正交矩阵                     7.92    -9.6%
-标准 Hadamard                    6.23    -28.9%
-块 Hadamard (size=128)          6.07    -30.7%
-DFRot (γ=50)                    5.68    -35.2%
-DFRot (γ=100)                   5.32    -39.3%
-DFRot (γ=200)                   5.14    -41.3%
-DFRot (自适应γ)                 5.01    -42.8%
-```
+
+不同旋转策略的 WikiText-2 PPL 改进效果：
+- 无旋转：8.76（基线）
+- 随机正交矩阵：7.92（-9.6%）
+- 标准 Hadamard：6.23（-28.9%）
+- 块 Hadamard (size=128)：6.07（-30.7%）
+- DFRot (γ=50)：5.68（-35.2%）
+- DFRot (γ=100)：5.32（-39.3%）
+- DFRot (γ=200)：5.14（-41.3%）
+- DFRot (自适应γ)：5.01（-42.8%）
+
+自适应 γ 值的 DFRot 效果最佳，相比无旋转降低 42.8% PPL。
 
 **2. 复制策略消融**
-```python
-# 不同复制策略的效果
-复制策略                    复制率   PPL    计算开销
-无复制                      0%      8.76    1.00×
-随机复制                    30%     7.21    1.30×
-频率based复制               30%     6.34    1.30×
-敏感度based复制             30%     5.87    1.30×
-混合标准复制                30%     5.62    1.30×
-自适应复制                  15-45%  5.48    1.28×
-```
+
+不同复制策略的效果对比：
+- 无复制：PPL 8.76，计算开销 1.00×
+- 随机复制（30%）：PPL 7.21，计算开销 1.30×
+- 频率based复制（30%）：PPL 6.34，计算开销 1.30×
+- 敏感度based复制（30%）：PPL 5.87，计算开销 1.30×
+- 混合标准复制（30%）：PPL 5.62，计算开销 1.30×
+- 自适应复制（15-45%）：PPL 5.48，计算开销 1.28×
+
+自适应复制在略低的计算开销下实现最佳效果。
 
 **3. 量化参数消融**
-```python
-# 量化参数组合效果
-参数组合                           PPL     说明
-基础 (gs=128, sym)                8.76    基线
-+ 非对称量化                      7.89    -10.0%
-+ 组大小64                        7.42    -15.3%
-+ 随机舍入                        7.15    -18.4%
-+ 激活裁剪优化                    6.83    -22.0%
-+ 网格偏移                        6.54    -25.3%
-全部优化                          6.12    -30.1%
-```
+
+量化参数组合的累积效果：
+- 基础配置（gs=128, 对称）：PPL 8.76
+- + 非对称量化：PPL 7.89（-10.0%）
+- + 组大小64：PPL 7.42（-15.3%）
+- + 随机舍入：PPL 7.15（-18.4%）
+- + 激活裁剪优化：PPL 6.83（-22.0%）
+- + 网格偏移：PPL 6.54（-25.3%）
+- 全部优化：PPL 6.12（-30.1%）
+
+各项优化技术累积贡献，总体降低 30.1% PPL。
 
 ### 7.3.7 关键发现总结
 
